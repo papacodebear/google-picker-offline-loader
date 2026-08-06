@@ -1,0 +1,43 @@
+{
+  "name": "google-picker-offline-loader",
+  "version": "0.1.0",
+  "description": "Load Google's Picker widget from locally vendored files instead of live from apis.google.com, so it can ship inside a Firefox add-on (or anywhere else that forbids remote script loading) without giving up drive.file-style scoped access.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "google-picker",
+    "google-drive",
+    "browser-extension",
+    "firefox",
+    "webextension",
+    "content-security-policy"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./vendor/*": "./vendor/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "vendor",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "vendor:picker": "node scripts/vendor-picker.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1",
+    "typescript": "~5.9.0"
+  }
+}

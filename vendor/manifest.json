@@ -1,0 +1,17 @@
+{
+  "capturedAt": "2026-08-06T00:35:28.054Z",
+  "files": [
+    {
+      "name": "api.js",
+      "sourceUrl": "https://apis.google.com/js/api.js",
+      "sha256": "529d5ae02fbba21a3ee0c12f7b937961514991520a0c12eb2b278a3aa2353b0a",
+      "size": 14576
+    },
+    {
+      "name": "picker-module.js",
+      "sourceUrl": "https://apis.google.com/_/scs/abc-static/_/js/k=gapi.lb.en.9vdPKhB0RUg.O/m=picker/rt=j/sv=1/d=1/ed=1/rs=AHpOoo97anj7zZ432JcN58tqJJp_A6WeOw/cb=gapi.loaded_0?le=scs,fedcm_migration_mod",
+      "sha256": "ec196696450ce83a3983f2b59ef6aeb59920e826bb93be0d27257063c49aa24f",
+      "size": 235031
+    }
+  ]
+}
