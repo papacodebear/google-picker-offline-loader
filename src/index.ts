@@ -124,11 +124,21 @@ function installUrlInterceptor(
     // until it's inserted into the document), so assigning the *real*
     // native src a microtask later than usual doesn't lose anything api.js
     // was relying on synchronously.
-    const remapAsync = async (value: string): Promise<string> => {
+    const remapAsync = async (rawValue: string): Promise<string> => {
+        // Coerced here (not just at the setAttribute call site) so both
+        // interception paths funnel through one guaranteed-string value —
+        // see this function's doc comment, finding #2.
+        const value = String(rawValue);
         if (!value.includes('m=picker')) {
             return value;
         }
-        const expectedCallback = new URL(value, doc.baseURI).searchParams.get('cb');
+        // cb=gapi.loaded_N is a *path segment* here (.../cb=gapi.loaded_0?le=...),
+        // not a query parameter — URL().searchParams won't see it at all
+        // (confirmed live: that mistake shipped initially and made this
+        // whole patching step silently no-op, falling through to the
+        // verbatim-file case below on every request). Match it directly
+        // against the raw string instead.
+        const expectedCallback = value.match(/\/cb=([^/?]+)/)?.[1];
         if (!expectedCallback) {
             // No cb= to patch against — serve the vendored file verbatim
             // rather than guess at a callback name that isn't there.
@@ -161,7 +171,7 @@ function installUrlInterceptor(
         });
         element.setAttribute = function (this: Element, name: string, value: string): void {
             if (name.toLowerCase() === 'src') {
-                applyRemap(this as HTMLScriptElement, String(value));
+                applyRemap(this as HTMLScriptElement, value);
                 return;
             }
             nativeSetAttribute.call(this, name, value);
