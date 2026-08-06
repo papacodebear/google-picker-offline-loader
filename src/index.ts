@@ -8,15 +8,26 @@
 // REMOTE_SCRIPT, a categorical prohibition, not a CSP-syntax difference to
 // work around) — and the whole reason this package exists.
 //
-// See scripts/vendor-picker.mjs for how vendor/api.js and
-// vendor/picker-module.js are captured and validated; see this file's own
-// installUrlInterceptor for how the dynamically-fetched second file gets
-// redirected to the vendored copy instead of the live one.
+// See scripts/vendor-picker.mjs for how vendor/api.js and the dynamically-
+// loaded module files (vendor/picker-module.js, vendor/gapi-iframes-
+// module.js) are captured and validated; see this file's own
+// installUrlInterceptor for how each dynamically-fetched module gets
+// redirected to its vendored copy instead of the live one.
 
 export const VENDORED_API_JS_FILE = 'api.js';
 export const VENDORED_PICKER_MODULE_FILE = 'picker-module.js';
+// gapi.load('picker', ...) doesn't just load the "picker" module — calling
+// setVisible(true) to actually render the dialog lazily pulls in a further
+// "gapi_iframes" submodule too (found only by exercising that call live;
+// scripts/vendor-picker.mjs didn't originally go that far). See
+// DYNAMIC_MODULES_BY_NAME below for how each m=<name> URL segment maps to
+// its vendored file.
+export const VENDORED_GAPI_IFRAMES_MODULE_FILE = 'gapi-iframes-module.js';
 
-export type VendoredAssetFile = typeof VENDORED_API_JS_FILE | typeof VENDORED_PICKER_MODULE_FILE;
+export type VendoredAssetFile =
+    | typeof VENDORED_API_JS_FILE
+    | typeof VENDORED_PICKER_MODULE_FILE
+    | typeof VENDORED_GAPI_IFRAMES_MODULE_FILE;
 
 export interface LoadGooglePickerOptions {
     /**
@@ -33,42 +44,83 @@ export interface LoadGooglePickerOptions {
     document?: Document;
 }
 
+// m=<name> path segment (from a dynamically-constructed gapi module URL) ->
+// which vendored file serves it. gapi.load('picker', ...) doesn't just load
+// "picker" — actually rendering the dialog (setVisible(true)) lazily pulls
+// in "gapi_iframes" too, found only by exercising that call for real.
+// Extend this (and re-run scripts/vendor-picker.mjs) if Picker ever needs a
+// further submodule beyond these two — nothing documents the full set
+// anywhere, this is only what's been observed live.
+const DYNAMIC_MODULES_BY_NAME: Record<string, VendoredAssetFile> = {
+    picker: VENDORED_PICKER_MODULE_FILE,
+    gapi_iframes: VENDORED_GAPI_IFRAMES_MODULE_FILE
+};
+
 let interceptorInstalled = false;
+const bakedInCallbackPromises = new Map<VendoredAssetFile, Promise<string>>();
 
 /**
- * gapi.load('picker', ...) dynamically constructs a module URL containing a
+ * Each vendored dynamic module is a frozen capture whose entire content is
+ * a single JSONP-style call — `<name>(function(_){...})` — where `<name>`
+ * is whatever api.js's internal load counter happened to assign that
+ * specific module at capture time (e.g. picker-module.js starts with
+ * literal text `gapi.loaded_0(`, gapi-iframes-module.js starts with
+ * `gapi.loaded_1(` in the capture this shipped with — not the same name,
+ * and not necessarily what a future re-vendor produces, since a module
+ * loaded later in a session gets a higher number). Discovered here from
+ * each file's own actual content rather than hardcoded, so this stays
+ * correct across re-vendoring without needing to keep a second, easy-to-
+ * forget constant in sync with whatever scripts/vendor-picker.mjs captures.
+ */
+function loadBakedInCallbackName(file: VendoredAssetFile, resolveAssetUrl: LoadGooglePickerOptions['resolveAssetUrl']): Promise<string> {
+    let promise = bakedInCallbackPromises.get(file);
+    if (!promise) {
+        promise = fetch(resolveAssetUrl(file)).then(async (response) => {
+            if (!response.ok) {
+                throw new Error(`failed to fetch vendored module ${file} to determine its callback name: ${response.status}`);
+            }
+            const match = (await response.text()).match(/^(gapi\.[a-zA-Z0-9_]+)\(/);
+            if (!match) {
+                throw new Error(`vendored module ${file} doesn't start with the expected gapi.loaded_N( JSONP wrapper`);
+            }
+            return match[1];
+        });
+        bakedInCallbackPromises.set(file, promise);
+    }
+    return promise;
+}
+
+/**
+ * gapi.load('picker', ...) dynamically constructs module URLs containing a
  * `cb=gapi.loaded_N` path segment (e.g. `.../cb=gapi.loaded_1?le=...` — a
  * path segment, not a query parameter, easy to get wrong once: an earlier
  * version of this fix used `URL().searchParams`, which silently found
  * nothing there at all) — a JSONP-style callback name that api.js itself
  * defines on `window.gapi` immediately before injecting the script, and
  * deletes once called. N is api.js's own internal load counter, not a
- * fixed value: confirmed live (2026-08-06) that a real embedding page can
- * request a callback name other than `loaded_0` on its very first Picker
- * load, unlike this package's own capture/validation harness (scripts/
- * vendor-picker.mjs), which only ever exercises a single, isolated
- * gapi.load() call and so only ever observes N=0.
+ * fixed value: confirmed live that a real embedding page can request a
+ * callback name other than `loaded_0` even on its very first Picker
+ * module load, unlike this package's own capture/validation harness
+ * (scripts/vendor-picker.mjs), which starts counting fresh each run.
  *
- * The vendored picker-module.js is a frozen capture whose entire content is
- * one such JSONP call — confirmed by inspection, the whole ~235KB file is
- * `gapi.loaded_0(function(_){...})`, that exact string appearing exactly
- * once, at position 0. Serving it unmodified only works when N happens to
- * be 0; otherwise api.js has defined a *different* global (e.g.
- * `gapi.loaded_1`) and never defined `gapi.loaded_0` at all, so calling it
- * throws `TypeError: gapi.loaded_0 is not a function` — a real bug this
- * package shipped with initially, not a hypothetical.
+ * Serving a vendored module unmodified only works when the requested name
+ * happens to match the one baked into that specific file; otherwise api.js
+ * has defined a *different* global and never defined the vendored file's
+ * own hardcoded name at all, so calling it throws e.g. `TypeError:
+ * gapi.loaded_0 is not a function` — a real bug this package shipped with
+ * initially, not a hypothetical.
  *
  * Fixed not by rewriting the file's bytes (tried first — requires serving
  * the patched content via a blob: URL, which this extension's own CSP
  * blocks: `script-src 'self'` doesn't permit blob: sources, and adding it
  * would be exactly the kind of CSP loosening vendoring this package in the
  * first place was meant to avoid), but by leaving the *file* untouched and
- * aliasing the name instead: `gapi.loaded_0 = gapi[<whatever api.js
- * actually asked for this time>]`, defined synchronously before the
+ * aliasing the name instead: `gapi[<this file's own baked-in name>] =
+ * gapi[<whatever api.js actually asked for this time>]`, set before the
  * unmodified, same-origin file loads normally. When that file runs and
- * calls its own hardcoded `gapi.loaded_0(...)`, it transparently invokes
- * whichever real callback api.js set up — the file's bytes, and the
- * request that fetches them, never change at all.
+ * calls its own hardcoded callback, it transparently invokes whichever
+ * real callback api.js set up — the file's bytes, and the request that
+ * fetches them, never change at all.
  */
 function installUrlInterceptor(doc: Document, resolveAssetUrl: LoadGooglePickerOptions['resolveAssetUrl']): void {
     if (interceptorInstalled) {
@@ -82,29 +134,48 @@ function installUrlInterceptor(doc: Document, resolveAssetUrl: LoadGooglePickerO
         throw new Error('cannot install Picker URL interceptor: HTMLScriptElement.src is not accessible here');
     }
 
-    const remap = (rawValue: string): string => {
+    // Async by necessity (aliasing needs each vendored file's own baked-in
+    // name, discovered via loadBakedInCallbackName's fetch) — safe as a
+    // fire-and-forget side effect of the src/setAttribute setters below
+    // rather than something they await directly: a <script> element
+    // doesn't actually start loading until the browser gets around to it
+    // (and not at all until it's inserted into the document), so assigning
+    // the *real* native src a microtask later than usual doesn't lose
+    // anything api.js was relying on synchronously. No CSP concern here
+    // unlike the earlier blob: attempt — the value assigned is always a
+    // real chrome.runtime.getURL()/browser.runtime.getURL()-style same-
+    // origin URL, api.js's own static load included.
+    const remapAsync = async (rawValue: string): Promise<string> => {
         // Coerced here (not just at the setAttribute call site) so both
         // interception paths funnel through one guaranteed-string value —
         // see this function's doc comment, finding #2 below.
         const value = String(rawValue);
-        if (!value.includes('m=picker')) {
+        const moduleName = value.match(/\/m=([^/]+)/)?.[1];
+        const vendoredFile = moduleName ? DYNAMIC_MODULES_BY_NAME[moduleName] : undefined;
+        if (!vendoredFile) {
             return value;
         }
         const expectedCallback = value.match(/\/cb=(gapi\.[^/?]+)/)?.[1];
         if (expectedCallback) {
-            // Defined *before* the (unmodified, real, CSP-compliant)
-            // vendored file gets a chance to load — api.js itself must
-            // already have defined this name by the time it constructs
-            // and assigns this URL (standard JSONP ordering: register the
-            // callback, then inject the script that will call it), so
-            // this alias is safe to set synchronously, right here.
-            const propertyName = expectedCallback.slice('gapi.'.length);
+            const bakedInName = await loadBakedInCallbackName(vendoredFile, resolveAssetUrl);
             const gapi = (globalThis as unknown as { gapi?: Record<string, unknown> }).gapi;
-            if (gapi && propertyName in gapi) {
-                gapi.loaded_0 = gapi[propertyName];
+            const realPropertyName = expectedCallback.slice('gapi.'.length);
+            const bakedInPropertyName = bakedInName.slice('gapi.'.length);
+            // api.js itself must already have defined the real callback by
+            // the time it constructs and assigns this URL (standard JSONP
+            // ordering: register the callback, then inject the script that
+            // will call it), so this alias is safe to set here.
+            if (gapi && realPropertyName in gapi) {
+                gapi[bakedInPropertyName] = gapi[realPropertyName];
             }
         }
-        return resolveAssetUrl(VENDORED_PICKER_MODULE_FILE);
+        return resolveAssetUrl(vendoredFile);
+    };
+
+    const applyRemap = (element: HTMLScriptElement, value: string): void => {
+        void remapAsync(value).then((resolved) => {
+            nativeSrcDescriptor.set!.call(element, resolved);
+        });
     };
 
     const originalCreateElement = doc.createElement.bind(doc);
@@ -119,12 +190,12 @@ function installUrlInterceptor(doc: Document, resolveAssetUrl: LoadGooglePickerO
                 return nativeSrcDescriptor.get!.call(element);
             },
             set(value: string): void {
-                nativeSrcDescriptor.set!.call(element, remap(value));
+                applyRemap(element as HTMLScriptElement, value);
             }
         });
         element.setAttribute = function (this: Element, name: string, value: string): void {
             if (name.toLowerCase() === 'src') {
-                nativeSetAttribute.call(this, name, remap(value));
+                applyRemap(this as HTMLScriptElement, value);
                 return;
             }
             nativeSetAttribute.call(this, name, value);

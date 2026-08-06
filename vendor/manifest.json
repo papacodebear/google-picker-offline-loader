@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-08-06T00:35:28.054Z",
+  "capturedAt": "2026-08-06T07:38:47.853Z",
   "files": [
     {
       "name": "api.js",
@@ -12,6 +12,12 @@
       "sourceUrl": "https://apis.google.com/_/scs/abc-static/_/js/k=gapi.lb.en.9vdPKhB0RUg.O/m=picker/rt=j/sv=1/d=1/ed=1/rs=AHpOoo97anj7zZ432JcN58tqJJp_A6WeOw/cb=gapi.loaded_0?le=scs,fedcm_migration_mod",
       "sha256": "ec196696450ce83a3983f2b59ef6aeb59920e826bb93be0d27257063c49aa24f",
       "size": 235031
+    },
+    {
+      "name": "gapi-iframes-module.js",
+      "sourceUrl": "https://apis.google.com/_/scs/abc-static/_/js/k=gapi.lb.en.9vdPKhB0RUg.O/m=gapi_iframes/exm=picker/rt=j/sv=1/d=1/ed=1/rs=AHpOoo97anj7zZ432JcN58tqJJp_A6WeOw/cb=gapi.loaded_1?le=scs,fedcm_migration_mod",
+      "sha256": "872ad7cbc25844a366c591fb4b3f77f8191b5896fc42f2fc6c21a210eb1f21d9",
+      "size": 36199
     }
   ]
 }
