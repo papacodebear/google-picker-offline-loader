@@ -34,13 +34,54 @@ export interface LoadGooglePickerOptions {
 }
 
 let interceptorInstalled = false;
+let pickerModuleTextPromise: Promise<string> | undefined;
+
+/**
+ * gapi.load('picker', ...) dynamically constructs a module URL containing a
+ * `cb=gapi.loaded_N` query parameter — a JSONP-style callback name that
+ * api.js itself defines immediately before injecting the script, and
+ * deletes once called. N is api.js's own internal load counter, not a fixed
+ * value: confirmed live (2026-08-06) that a real embedding page can request
+ * a callback name other than `loaded_0` on its very first Picker load,
+ * unlike this package's own capture/validation harness (scripts/
+ * vendor-picker.mjs), which only ever exercises a single, isolated
+ * gapi.load() call and so only ever observes N=0.
+ *
+ * The vendored picker-module.js is a frozen capture whose entire content is
+ * one such JSONP call — confirmed by inspection, the whole ~235KB file is
+ * `gapi.loaded_0(function(_){...})`, that exact string appearing exactly
+ * once, at position 0. Serving it unmodified only works when N happens to
+ * be 0; otherwise api.js has defined a *different* global (e.g.
+ * `gapi.loaded_1`) and never defined `gapi.loaded_0` at all, so calling it
+ * throws `TypeError: gapi.loaded_0 is not a function` — a real bug this
+ * package shipped with initially, not a hypothetical.
+ *
+ * Fixed by not assuming N at all: read whatever callback name api.js
+ * actually requested out of the URL it constructed, and rewrite the
+ * vendored content's leading `gapi.loaded_0(` to match *that* name instead,
+ * at runtime, on every load.
+ */
+function patchCallbackName(moduleText: string, expectedCallback: string): string {
+    return moduleText.replace(/^gapi\.loaded_0\(/, `${expectedCallback}(`);
+}
+
+function loadPickerModuleText(resolveAssetUrl: LoadGooglePickerOptions['resolveAssetUrl']): Promise<string> {
+    pickerModuleTextPromise ??= fetch(resolveAssetUrl(VENDORED_PICKER_MODULE_FILE)).then((response) => {
+        if (!response.ok) {
+            throw new Error(`failed to fetch the vendored Picker module for callback-name patching: ${response.status}`);
+        }
+        return response.text();
+    });
+    return pickerModuleTextPromise;
+}
 
 /**
  * Patches document.createElement so any <script> element whose `src` gets
  * set to Google's dynamically-resolved Picker module URL (recognized by the
  * `m=picker` path segment gapi.load's own module-loading scheme embeds) is
- * silently redirected to the vendored local copy instead. Everything else
- * passes through untouched.
+ * silently redirected to the vendored local copy instead — with its
+ * callback name patched to match what api.js actually asked for (see
+ * patchCallbackName above). Everything else passes through untouched.
  *
  * DOM-level interception rather than patching api.js's own minified source
  * directly — robust to Google changing their internal implementation, since
@@ -59,19 +100,49 @@ let interceptorInstalled = false;
  *      pattern-matching, or matching silently throws and api.js's own
  *      error-recovery path kicks in and retries rather than surfacing the bug.
  */
-function installUrlInterceptor(doc: Document, resolveAssetUrl: LoadGooglePickerOptions['resolveAssetUrl']): void {
+function installUrlInterceptor(
+    doc: Document,
+    resolveAssetUrl: LoadGooglePickerOptions['resolveAssetUrl'],
+    pickerModuleTextReady: Promise<string>
+): void {
     if (interceptorInstalled) {
         return;
     }
     interceptorInstalled = true;
-
-    const remap = (value: string): string => (value.includes('m=picker') ? resolveAssetUrl(VENDORED_PICKER_MODULE_FILE) : value);
 
     const nativeSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src');
     const nativeSetAttribute = Element.prototype.setAttribute;
     if (!nativeSrcDescriptor?.get || !nativeSrcDescriptor.set) {
         throw new Error('cannot install Picker URL interceptor: HTMLScriptElement.src is not accessible here');
     }
+
+    // Async by necessity (patching requires the already-in-flight
+    // pickerModuleTextReady fetch to resolve) — safe as a fire-and-forget
+    // side effect of the src/setAttribute setters below rather than
+    // something they await directly: a <script> element doesn't actually
+    // start loading until the browser gets around to it (and not at all
+    // until it's inserted into the document), so assigning the *real*
+    // native src a microtask later than usual doesn't lose anything api.js
+    // was relying on synchronously.
+    const remapAsync = async (value: string): Promise<string> => {
+        if (!value.includes('m=picker')) {
+            return value;
+        }
+        const expectedCallback = new URL(value, doc.baseURI).searchParams.get('cb');
+        if (!expectedCallback) {
+            // No cb= to patch against — serve the vendored file verbatim
+            // rather than guess at a callback name that isn't there.
+            return resolveAssetUrl(VENDORED_PICKER_MODULE_FILE);
+        }
+        const patched = patchCallbackName(await pickerModuleTextReady, expectedCallback);
+        return URL.createObjectURL(new Blob([patched], { type: 'text/javascript' }));
+    };
+
+    const applyRemap = (element: HTMLScriptElement, value: string): void => {
+        void remapAsync(value).then((resolved) => {
+            nativeSrcDescriptor.set!.call(element, resolved);
+        });
+    };
 
     const originalCreateElement = doc.createElement.bind(doc);
     doc.createElement = ((tagName: string, options?: ElementCreationOptions): HTMLElement => {
@@ -85,12 +156,12 @@ function installUrlInterceptor(doc: Document, resolveAssetUrl: LoadGooglePickerO
                 return nativeSrcDescriptor.get!.call(element);
             },
             set(value: string): void {
-                nativeSrcDescriptor.set!.call(element, remap(value));
+                applyRemap(element as HTMLScriptElement, value);
             }
         });
         element.setAttribute = function (this: Element, name: string, value: string): void {
             if (name.toLowerCase() === 'src') {
-                nativeSetAttribute.call(this, name, remap(String(value)));
+                applyRemap(this as HTMLScriptElement, String(value));
                 return;
             }
             nativeSetAttribute.call(this, name, value);
@@ -105,7 +176,11 @@ function loadApiJs(doc: Document, resolveAssetUrl: LoadGooglePickerOptions['reso
     let promise = apiJsPromises.get(doc);
     if (!promise) {
         promise = new Promise((resolve, reject) => {
-            installUrlInterceptor(doc, resolveAssetUrl);
+            // Kicked off here, ahead of time, so it's likely already
+            // resolved (or close to it) by the time gapi.load('picker', ...)
+            // actually needs it — patching stays off any hot path.
+            const pickerModuleTextReady = loadPickerModuleText(resolveAssetUrl);
+            installUrlInterceptor(doc, resolveAssetUrl, pickerModuleTextReady);
             const script = doc.createElement('script');
             script.src = resolveAssetUrl(VENDORED_API_JS_FILE);
             script.onload = () => resolve();
