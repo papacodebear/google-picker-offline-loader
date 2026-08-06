@@ -1,6 +1,6 @@
 {
   "name": "google-picker-offline-loader",
-  "version": "0.1.0",
+  "version": "2026.8.6",
   "description": "Load Google's Picker widget from locally vendored files instead of live from apis.google.com, so it can ship inside a Firefox add-on (or anywhere else that forbids remote script loading) without giving up drive.file-style scoped access.",
   "type": "module",
   "license": "MIT",

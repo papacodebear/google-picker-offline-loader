@@ -79,6 +79,7 @@ This package's runtime does that by patching `document.createElement` so any `<s
 
 - This package doesn't build your `PickerBuilder` chain or manage OAuth tokens — bring your own.
 - `vendor/` is a committed, periodically-refreshed capture (`npm run vendor:picker`, validated before it overwrites anything) rather than something fetched live — pin/bump this package's version the way you would any other dependency to pick up a refresh.
+- Versions are dated (`YYYY.M.D`, e.g. `2026.8.6`), not semver — most releases are a re-validated capture, not a feature/breaking change, so the version tells you when it was last checked against Google's live Picker at a glance.
 
 ## License
 
